@@ -1,0 +1,31 @@
+{
+  "name": "ecommerce-api-mongodb",
+  "version": "1.0.0",
+  "description": "API REST para e-commerce con MongoDB - Integrador Base de Datos UTN",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "keywords": [
+    "ecommerce",
+    "mongodb",
+    "express",
+    "jwt",
+    "api-rest"
+  ],
+  "author": "UTN - Base de Datos 2",
+  "license": "MIT",
+  "dependencies": {
+    "bcrypt": "^6.0.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "express-validator": "^7.0.1",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.0.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  }
+}

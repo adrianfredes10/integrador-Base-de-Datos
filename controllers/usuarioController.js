@@ -1,6 +1,14 @@
+const { Types } = require('mongoose');
 const Usuario = require('../models/Usuario');
 const Carrito = require('../models/Carrito');
 const { generarToken } = require('../middleware/auth');
+
+// Helper
+const asObjectId = (val) => {
+  if (!val) return null;
+  if (val instanceof Types.ObjectId) return val;
+  return Types.ObjectId.isValid(val) ? new Types.ObjectId(val) : null;
+};
 
 // @desc    Registrar nuevo usuario
 // @route   POST /api/users
@@ -9,41 +17,36 @@ exports.registrarUsuario = async (req, res, next) => {
   try {
     const { nombre, email, password, telefono, direccion, rol } = req.body;
 
-    // Validar campos requeridos
     if (!nombre || !email || !password) {
-      return res.status(400).json({
-        success: false,
-        error: 'Por favor proporcione nombre, email y contraseña'
-      });
+      return res.status(400).json({ success: false, error: 'Por favor proporcione nombre, email y contraseña' });
     }
 
-    // Crear usuario
+    const emailNorm = String(email).trim().toLowerCase();
+    const existe = await Usuario.findOne({ email: emailNorm });
+    if (existe) {
+      return res.status(400).json({ success: false, error: 'El email ya existe en la base de datos' });
+    }
+
     const usuario = await Usuario.create({
       nombre,
-      email,
+      email: emailNorm,
       password,
       telefono,
       direccion,
       rol: rol || 'cliente'
     });
 
-    // Crear carrito para el usuario
     await Carrito.create({ usuario: usuario._id });
-
-    // Generar token
     const token = generarToken(usuario._id);
 
     res.status(201).json({
       success: true,
-      data: {
-        _id: usuario._id,
-        nombre: usuario.nombre,
-        email: usuario.email,
-        rol: usuario.rol,
-        token
-      }
+      data: { _id: usuario._id, nombre: usuario.nombre, email: usuario.email, rol: usuario.rol, token }
     });
   } catch (error) {
+    if (error?.code === 11000) {
+      return res.status(400).json({ success: false, error: 'El email ya existe en la base de datos' });
+    }
     next(error);
   }
 };
@@ -54,47 +57,24 @@ exports.registrarUsuario = async (req, res, next) => {
 exports.loginUsuario = async (req, res, next) => {
   try {
     const { email, password } = req.body;
-
-    // Validar email y password
     if (!email || !password) {
-      return res.status(400).json({
-        success: false,
-        error: 'Por favor proporcione email y contraseña'
-      });
+      return res.status(400).json({ success: false, error: 'Por favor proporcione email y contraseña' });
     }
 
-    // Buscar usuario con password
-    const usuario = await Usuario.findOne({ email }).select('+password');
-
+    const usuario = await Usuario.findOne({ email: email.toLowerCase() }).select('+password');
     if (!usuario) {
-      return res.status(401).json({
-        success: false,
-        error: 'Credenciales inválidas'
-      });
+      return res.status(401).json({ success: false, error: 'Credenciales inválidas' });
     }
 
-    // Verificar password
-    const passwordCorrecto = await usuario.compararPassword(password);
-
-    if (!passwordCorrecto) {
-      return res.status(401).json({
-        success: false,
-        error: 'Credenciales inválidas'
-      });
+    const valido = await usuario.compararPassword(password);
+    if (!valido) {
+      return res.status(401).json({ success: false, error: 'Credenciales inválidas' });
     }
 
-    // Generar token
     const token = generarToken(usuario._id);
-
     res.status(200).json({
       success: true,
-      data: {
-        _id: usuario._id,
-        nombre: usuario.nombre,
-        email: usuario.email,
-        rol: usuario.rol,
-        token
-      }
+      data: { _id: usuario._id, nombre: usuario.nombre, email: usuario.email, rol: usuario.rol, token }
     });
   } catch (error) {
     next(error);
@@ -106,16 +86,11 @@ exports.loginUsuario = async (req, res, next) => {
 // @access  Privado/Admin
 exports.obtenerUsuarios = async (req, res, next) => {
   try {
-    // Usar operador $ne para excluir campos sensibles
     const usuarios = await Usuario.find({ activo: { $ne: false } })
       .select('-password')
       .sort('-createdAt');
 
-    res.status(200).json({
-      success: true,
-      count: usuarios.length,
-      data: usuarios
-    });
+    res.status(200).json({ success: true, count: usuarios.length, data: usuarios });
   } catch (error) {
     next(error);
   }
@@ -127,31 +102,19 @@ exports.obtenerUsuarios = async (req, res, next) => {
 exports.buscarUsuarios = async (req, res, next) => {
   try {
     const { termino } = req.query;
-
-    if (!termino || termino.trim().length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'Proporcione un término de búsqueda'
-      });
+    if (!termino || !termino.trim()) {
+      return res.status(400).json({ success: false, error: 'Proporcione un término de búsqueda' });
     }
 
     const regex = new RegExp(termino.trim(), 'i');
-
     const usuarios = await Usuario.find({
       activo: { $ne: false },
-      $or: [
-        { nombre: { $regex: regex } },
-        { email: { $regex: regex } }
-      ]
+      $or: [{ nombre: { $regex: regex } }, { email: { $regex: regex } }]
     })
       .select('nombre email rol telefono direccion')
       .sort('nombre');
 
-    res.status(200).json({
-      success: true,
-      count: usuarios.length,
-      data: usuarios
-    });
+    res.status(200).json({ success: true, count: usuarios.length, data: usuarios });
   } catch (error) {
     next(error);
   }
@@ -162,27 +125,17 @@ exports.buscarUsuarios = async (req, res, next) => {
 // @access  Privado
 exports.obtenerUsuario = async (req, res, next) => {
   try {
-    const usuario = await Usuario.findById(req.params.id).select('-password');
+    const id = asObjectId(req.params.id);
+    if (!id) return res.status(400).json({ success: false, error: 'ID inválido' });
 
-    if (!usuario) {
-      return res.status(404).json({
-        success: false,
-        error: 'Usuario no encontrado'
-      });
-    }
+    const usuario = await Usuario.findById(id).select('-password');
+    if (!usuario) return res.status(404).json({ success: false, error: 'Usuario no encontrado' });
 
-    // Verificar que el usuario pueda ver su propia info o sea admin
     if (usuario._id.toString() !== req.usuario._id.toString() && req.usuario.rol !== 'admin') {
-      return res.status(403).json({
-        success: false,
-        error: 'No autorizado para ver este usuario'
-      });
+      return res.status(403).json({ success: false, error: 'No autorizado para ver este usuario' });
     }
 
-    res.status(200).json({
-      success: true,
-      data: usuario
-    });
+    res.status(200).json({ success: true, data: usuario });
   } catch (error) {
     next(error);
   }
@@ -193,49 +146,25 @@ exports.obtenerUsuario = async (req, res, next) => {
 // @access  Privado
 exports.actualizarUsuario = async (req, res, next) => {
   try {
-    const { password, email, rol, ...datosPermitidos } = req.body;
+    const id = asObjectId(req.params.id);
+    if (!id) return res.status(400).json({ success: false, error: 'ID inválido' });
 
-    // Solo admin puede cambiar rol
+    const { password, email, rol, ...otros } = req.body;
     if (rol && req.usuario.rol !== 'admin') {
-      return res.status(403).json({
-        success: false,
-        error: 'No autorizado para cambiar el rol'
-      });
+      return res.status(403).json({ success: false, error: 'No autorizado para cambiar el rol' });
+    }
+    if (id.toString() !== req.usuario._id.toString() && req.usuario.rol !== 'admin') {
+      return res.status(403).json({ success: false, error: 'No autorizado para actualizar este usuario' });
     }
 
-    // Verificar que el usuario pueda actualizar su propia info o sea admin
-    if (req.params.id !== req.usuario._id.toString() && req.usuario.rol !== 'admin') {
-      return res.status(403).json({
-        success: false,
-        error: 'No autorizado para actualizar este usuario'
-      });
-    }
+    const datos = { ...otros };
+    if (rol && req.usuario.rol === 'admin') datos.rol = rol;
 
-    const datosActualizar = { ...datosPermitidos };
-    if (rol && req.usuario.rol === 'admin') {
-      datosActualizar.rol = rol;
-    }
+    const usuario = await Usuario.findByIdAndUpdate(id, { $set: datos }, { new: true, runValidators: true })
+      .select('-password');
 
-    const usuario = await Usuario.findByIdAndUpdate(
-      req.params.id,
-      { $set: datosActualizar }, // Usar operador $set
-      {
-        new: true,
-        runValidators: true
-      }
-    ).select('-password');
-
-    if (!usuario) {
-      return res.status(404).json({
-        success: false,
-        error: 'Usuario no encontrado'
-      });
-    }
-
-    res.status(200).json({
-      success: true,
-      data: usuario
-    });
+    if (!usuario) return res.status(404).json({ success: false, error: 'Usuario no encontrado' });
+    res.status(200).json({ success: true, data: usuario });
   } catch (error) {
     next(error);
   }
@@ -246,26 +175,16 @@ exports.actualizarUsuario = async (req, res, next) => {
 // @access  Privado/Admin
 exports.eliminarUsuario = async (req, res, next) => {
   try {
-    const usuario = await Usuario.findById(req.params.id);
+    const id = asObjectId(req.params.id);
+    if (!id) return res.status(400).json({ success: false, error: 'ID inválido' });
 
-    if (!usuario) {
-      return res.status(404).json({
-        success: false,
-        error: 'Usuario no encontrado'
-      });
-    }
+    const usuario = await Usuario.findById(id);
+    if (!usuario) return res.status(404).json({ success: false, error: 'Usuario no encontrado' });
 
-    // Eliminar carrito del usuario
-    await Carrito.deleteOne({ usuario: req.params.id });
-
-    // Eliminar usuario
+    await Carrito.deleteOne({ usuario: id });
     await usuario.deleteOne();
 
-    res.status(200).json({
-      success: true,
-      data: {},
-      message: 'Usuario y carrito eliminados correctamente'
-    });
+    res.status(200).json({ success: true, data: {}, message: 'Usuario y carrito eliminados correctamente' });
   } catch (error) {
     next(error);
   }
@@ -277,13 +196,8 @@ exports.eliminarUsuario = async (req, res, next) => {
 exports.obtenerPerfil = async (req, res, next) => {
   try {
     const usuario = await Usuario.findById(req.usuario._id).select('-password');
-
-    res.status(200).json({
-      success: true,
-      data: usuario
-    });
+    res.status(200).json({ success: true, data: usuario });
   } catch (error) {
     next(error);
   }
 };
-

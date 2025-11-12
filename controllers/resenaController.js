@@ -1,35 +1,50 @@
+// controllers/resenaController.js
+
+const { Types } = require('mongoose');
 const Resena = require('../models/Resena');
 const Pedido = require('../models/Pedido');
 const Producto = require('../models/Producto');
+
+// Helpers -------------------------------------------------------------
+
+const asObjectId = (val) => {
+  // Acepta ObjectId, string o undefined y devuelve un Types.ObjectId (o null si inválido)
+  if (!val) return null;
+  if (val instanceof Types.ObjectId) return val;
+  return Types.ObjectId.isValid(val) ? new Types.ObjectId(val) : null;
+};
 
 // @desc    Crear nueva reseña (solo si el usuario compró el producto)
 // @route   POST /api/resenas
 // @access  Privado
 exports.crearResena = async (req, res, next) => {
   try {
-    const { producto, calificacion, comentario } = req.body;
+    // Aceptamos "producto" o "productoId" para no pelear con Postman
+    const productoId = req.body.productoId || req.body.producto;
+    const { calificacion, comentario } = req.body;
 
-    if (!producto || !calificacion || !comentario) {
+    if (!productoId || !calificacion || !comentario) {
       return res.status(400).json({
         success: false,
-        error: 'Proporcione producto, calificación y comentario'
+        error: 'Proporcione productoId/producto, calificación y comentario'
       });
     }
 
-    // Verificar que el producto existe
-    const productoExiste = await Producto.findById(producto);
+    const pid = asObjectId(productoId);
+    if (!pid) {
+      return res.status(400).json({ success: false, error: 'ID de producto inválido' });
+    }
 
+    // Verificar que el producto existe
+    const productoExiste = await Producto.findById(pid);
     if (!productoExiste) {
-      return res.status(404).json({
-        success: false,
-        error: 'Producto no encontrado'
-      });
+      return res.status(404).json({ success: false, error: 'Producto no encontrado' });
     }
 
     // Verificar si el usuario ya dejó una reseña para este producto
     const resenaExistente = await Resena.findOne({
       usuario: req.usuario._id,
-      producto
+      producto: pid
     });
 
     if (resenaExistente) {
@@ -39,48 +54,49 @@ exports.crearResena = async (req, res, next) => {
       });
     }
 
-    // Verificar que el usuario compró el producto usando agregación
-    // Usar $match, $unwind, $lookup
+    // Verificar compra del producto (enviado o entregado)
+    const uid = asObjectId(req.usuario._id);
     const pedidosConProducto = await Pedido.aggregate([
-      {
-        $match: {
-          usuario: require('mongoose').Types.ObjectId(req.usuario._id.toString()),
-          estado: { $in: ['enviado', 'entregado'] }
-        }
-      },
-      {
-        $unwind: '$items'
-      },
-      {
-        $match: {
-          'items.producto': require('mongoose').Types.ObjectId(producto)
-        }
-      },
-      {
-        $limit: 1
-      }
+      { $match: { usuario: uid, estado: { $in: ['enviado', 'entregado'] } } },
+      { $unwind: '$items' },
+      { $match: { 'items.producto': pid } },
+      { $limit: 1 }
     ]);
 
     const verificado = pedidosConProducto.length > 0;
 
     // Crear reseña
     const resena = await Resena.create({
-      usuario: req.usuario._id,
-      producto,
+      usuario: uid,
+      producto: pid,
       calificacion,
       comentario,
       verificado
     });
 
-    // Obtener reseña con datos poblados
+    // Recalcular promedio y cantidad en el producto (bono que suelen pedir)
+    const agg = await Resena.aggregate([
+      { $match: { producto: pid } },
+      {
+        $group: {
+          _id: '$producto',
+          promedio: { $avg: '$calificacion' },
+          cantidad: { $sum: 1 }
+        }
+      }
+    ]);
+    const promedio = agg[0]?.promedio ?? 0;
+    const cantidad = agg[0]?.cantidad ?? 0;
+
+    await Producto.findByIdAndUpdate(pid, {
+      $set: { calificacionPromedio: promedio, numeroResenas: cantidad }
+    });
+
     const resenaCompleta = await Resena.findById(resena._id)
       .populate('usuario', 'nombre')
       .populate('producto', 'nombre imagen');
 
-    res.status(201).json({
-      success: true,
-      data: resenaCompleta
-    });
+    return res.status(201).json({ success: true, data: resenaCompleta });
   } catch (error) {
     next(error);
   }
@@ -91,14 +107,16 @@ exports.crearResena = async (req, res, next) => {
 // @access  Público
 exports.obtenerResenas = async (req, res, next) => {
   try {
-    // Usar $lookup mediante populate
     const resenas = await Resena.find()
+      .populate({
+        path: 'producto',
+        select: 'nombre imagen precio categoria',
+        populate: { path: 'categoria', select: 'nombre' }
+      })
       .populate('usuario', 'nombre')
-      .populate('producto', 'nombre imagen precio categoria')
-      .populate('producto.categoria', 'nombre')
       .sort('-createdAt');
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       count: resenas.length,
       data: resenas
@@ -113,47 +131,41 @@ exports.obtenerResenas = async (req, res, next) => {
 // @access  Público
 exports.obtenerResenasPorProducto = async (req, res, next) => {
   try {
-    const { productId } = req.params;
+    const pid = asObjectId(req.params.productId);
+    if (!pid) {
+      return res.status(400).json({ success: false, error: 'ID de producto inválido' });
+    }
 
-    // Usar operador $eq
-    const resenas = await Resena.find({ producto: { $eq: productId } })
+    // Listado
+    const resenas = await Resena.find({ producto: pid })
       .populate('usuario', 'nombre')
       .sort('-createdAt');
 
-    // Calcular estadísticas usando agregación
+    // Stats (avg, conteos por estrella)
     const stats = await Resena.aggregate([
-      {
-        $match: { producto: require('mongoose').Types.ObjectId(productId) }
-      },
+      { $match: { producto: pid } },
       {
         $group: {
           _id: null,
           calificacionPromedio: { $avg: '$calificacion' },
           totalResenas: { $sum: 1 },
-          // Contar por calificación
-          cinco: {
-            $sum: { $cond: [{ $eq: ['$calificacion', 5] }, 1, 0] }
-          },
-          cuatro: {
-            $sum: { $cond: [{ $eq: ['$calificacion', 4] }, 1, 0] }
-          },
-          tres: {
-            $sum: { $cond: [{ $eq: ['$calificacion', 3] }, 1, 0] }
-          },
-          dos: {
-            $sum: { $cond: [{ $eq: ['$calificacion', 2] }, 1, 0] }
-          },
-          uno: {
-            $sum: { $cond: [{ $eq: ['$calificacion', 1] }, 1, 0] }
-          }
+          cinco: { $sum: { $cond: [{ $eq: ['$calificacion', 5] }, 1, 0] } },
+          cuatro: { $sum: { $cond: [{ $eq: ['$calificacion', 4] }, 1, 0] } },
+          tres: { $sum: { $cond: [{ $eq: ['$calificacion', 3] }, 1, 0] } },
+          dos: { $sum: { $cond: [{ $eq: ['$calificacion', 2] }, 1, 0] } },
+          uno: { $sum: { $cond: [{ $eq: ['$calificacion', 1] }, 1, 0] } }
         }
       }
     ]);
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       count: resenas.length,
-      stats: stats[0] || {},
+      stats: stats[0] || {
+        calificacionPromedio: 0,
+        totalResenas: 0,
+        cinco: 0, cuatro: 0, tres: 0, dos: 0, uno: 0
+      },
       data: resenas
     });
   } catch (error) {
@@ -166,7 +178,6 @@ exports.obtenerResenasPorProducto = async (req, res, next) => {
 // @access  Público
 exports.obtenerTopCalificaciones = async (req, res, next) => {
   try {
-    // Usar agregación: $group, $avg, $lookup, $sort
     const topProductos = await Resena.aggregate([
       {
         $group: {
@@ -175,14 +186,8 @@ exports.obtenerTopCalificaciones = async (req, res, next) => {
           totalResenas: { $sum: 1 }
         }
       },
+      { $match: { totalResenas: { $gte: 1 } } },
       {
-        // Filtrar productos con al menos 1 reseña
-        $match: {
-          totalResenas: { $gte: 1 }
-        }
-      },
-      {
-        // $lookup para traer datos del producto
         $lookup: {
           from: 'productos',
           localField: '_id',
@@ -190,18 +195,9 @@ exports.obtenerTopCalificaciones = async (req, res, next) => {
           as: 'producto'
         }
       },
+      { $unwind: '$producto' },
+      { $match: { 'producto.activo': true } },
       {
-        // $unwind para descomponer el array
-        $unwind: '$producto'
-      },
-      {
-        // $match para solo productos activos
-        $match: {
-          'producto.activo': { $eq: true }
-        }
-      },
-      {
-        // $lookup para traer la categoría
         $lookup: {
           from: 'categorias',
           localField: 'producto.categoria',
@@ -209,18 +205,9 @@ exports.obtenerTopCalificaciones = async (req, res, next) => {
           as: 'producto.categoria'
         }
       },
-      {
-        $unwind: {
-          path: '$producto.categoria',
-          preserveNullAndEmptyArrays: true
-        }
-      },
-      {
-        $sort: { calificacionPromedio: -1, totalResenas: -1 }
-      },
-      {
-        $limit: 20
-      },
+      { $unwind: { path: '$producto.categoria', preserveNullAndEmptyArrays: true } },
+      { $sort: { calificacionPromedio: -1, totalResenas: -1 } },
+      { $limit: 20 },
       {
         $project: {
           'producto.nombre': 1,
@@ -233,11 +220,7 @@ exports.obtenerTopCalificaciones = async (req, res, next) => {
       }
     ]);
 
-    res.status(200).json({
-      success: true,
-      count: topProductos.length,
-      data: topProductos
-    });
+    return res.status(200).json({ success: true, count: topProductos.length, data: topProductos });
   } catch (error) {
     next(error);
   }
@@ -248,21 +231,18 @@ exports.obtenerTopCalificaciones = async (req, res, next) => {
 // @access  Público
 exports.obtenerResena = async (req, res, next) => {
   try {
-    const resena = await Resena.findById(req.params.id)
+    const rid = asObjectId(req.params.id);
+    if (!rid) return res.status(400).json({ success: false, error: 'ID inválido' });
+
+    const resena = await Resena.findById(rid)
       .populate('usuario', 'nombre')
       .populate('producto', 'nombre imagen precio');
 
     if (!resena) {
-      return res.status(404).json({
-        success: false,
-        error: 'Reseña no encontrada'
-      });
+      return res.status(404).json({ success: false, error: 'Reseña no encontrada' });
     }
 
-    res.status(200).json({
-      success: true,
-      data: resena
-    });
+    return res.status(200).json({ success: true, data: resena });
   } catch (error) {
     next(error);
   }
@@ -273,45 +253,27 @@ exports.obtenerResena = async (req, res, next) => {
 // @access  Privado
 exports.actualizarResena = async (req, res, next) => {
   try {
-    let resena = await Resena.findById(req.params.id);
+    const rid = asObjectId(req.params.id);
+    if (!rid) return res.status(400).json({ success: false, error: 'ID inválido' });
 
-    if (!resena) {
-      return res.status(404).json({
-        success: false,
-        error: 'Reseña no encontrada'
-      });
-    }
+    let resena = await Resena.findById(rid);
+    if (!resena) return res.status(404).json({ success: false, error: 'Reseña no encontrada' });
 
-    // Verificar que el usuario es el autor de la reseña
     if (resena.usuario.toString() !== req.usuario._id.toString()) {
-      return res.status(403).json({
-        success: false,
-        error: 'No autorizado para actualizar esta reseña'
-      });
+      return res.status(403).json({ success: false, error: 'No autorizado para actualizar esta reseña' });
     }
 
     const { calificacion, comentario } = req.body;
 
-    // Usar operador $set
     resena = await Resena.findByIdAndUpdate(
-      req.params.id,
-      {
-        $set: {
-          calificacion: calificacion || resena.calificacion,
-          comentario: comentario || resena.comentario
-        }
-      },
-      {
-        new: true,
-        runValidators: true
-      }
-    ).populate('usuario', 'nombre')
+      rid,
+      { $set: { calificacion: calificacion ?? resena.calificacion, comentario: comentario ?? resena.comentario } },
+      { new: true, runValidators: true }
+    )
+      .populate('usuario', 'nombre')
       .populate('producto', 'nombre imagen');
 
-    res.status(200).json({
-      success: true,
-      data: resena
-    });
+    return res.status(200).json({ success: true, data: resena });
   } catch (error) {
     next(error);
   }
@@ -322,30 +284,19 @@ exports.actualizarResena = async (req, res, next) => {
 // @access  Privado
 exports.eliminarResena = async (req, res, next) => {
   try {
-    const resena = await Resena.findById(req.params.id);
+    const rid = asObjectId(req.params.id);
+    if (!rid) return res.status(400).json({ success: false, error: 'ID inválido' });
 
-    if (!resena) {
-      return res.status(404).json({
-        success: false,
-        error: 'Reseña no encontrada'
-      });
-    }
+    const resena = await Resena.findById(rid);
+    if (!resena) return res.status(404).json({ success: false, error: 'Reseña no encontrada' });
 
-    // Verificar que el usuario es el autor o admin
     if (resena.usuario.toString() !== req.usuario._id.toString() && req.usuario.rol !== 'admin') {
-      return res.status(403).json({
-        success: false,
-        error: 'No autorizado para eliminar esta reseña'
-      });
+      return res.status(403).json({ success: false, error: 'No autorizado para eliminar esta reseña' });
     }
 
     await resena.deleteOne();
 
-    res.status(200).json({
-      success: true,
-      data: {},
-      message: 'Reseña eliminada correctamente'
-    });
+    return res.status(200).json({ success: true, data: {}, message: 'Reseña eliminada correctamente' });
   } catch (error) {
     next(error);
   }
@@ -360,13 +311,8 @@ exports.obtenerMisResenas = async (req, res, next) => {
       .populate('producto', 'nombre imagen precio')
       .sort('-createdAt');
 
-    res.status(200).json({
-      success: true,
-      count: resenas.length,
-      data: resenas
-    });
+    return res.status(200).json({ success: true, count: resenas.length, data: resenas });
   } catch (error) {
     next(error);
   }
 };
-

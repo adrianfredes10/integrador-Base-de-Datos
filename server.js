@@ -43,16 +43,29 @@ app.get('/', (req, res) => {
   });
 });
 
-// Middleware de manejo de errores (debe ir al final)
-app.use(errorHandler);
+// Middleware de manejo de errores JWT
+app.use((err, req, res, next) => {
+  if (err?.name === 'TokenExpiredError') {
+    return res.status(401).json({
+      success: false,
+      error: 'jwt expired'
+    });
+  }
 
-// Manejo de rutas no encontradas
-app.use((req, res) => {
-  res.status(404).json({
+  if (err?.name === 'JsonWebTokenError') {
+    return res.status(401).json({
+      success: false,
+      error: 'jwt invalid'
+    });
+  }
+
+  console.error(err);
+  res.status(err.statusCode || 500).json({
     success: false,
-    error: 'Ruta no encontrada'
+    error: err.message || 'Error interno del servidor'
   });
 });
+
 
 const PORT = process.env.PORT || 3000;
 

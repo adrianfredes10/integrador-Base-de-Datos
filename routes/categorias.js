@@ -10,15 +10,16 @@ const {
 } = require('../controllers/categoriaController');
 const { protegerRuta, verificarRol } = require('../middleware/auth');
 
-// Rutas públicas
+// Públicas
 router.get('/', obtenerCategorias);
-router.get('/stats', obtenerEstadisticasCategorias);
-router.get('/:id', obtenerCategoria);
 
-// Rutas protegidas (Admin)
+// Protegidas (admin)
+router.get('/stats', protegerRuta, verificarRol('admin'), obtenerEstadisticasCategorias);
+
+router.get('/:id', obtenerCategoria); // <-- SIEMPRE después de /stats
+
 router.post('/', protegerRuta, verificarRol('admin'), crearCategoria);
 router.put('/:id', protegerRuta, verificarRol('admin'), actualizarCategoria);
 router.delete('/:id', protegerRuta, verificarRol('admin'), eliminarCategoria);
 
 module.exports = router;
-

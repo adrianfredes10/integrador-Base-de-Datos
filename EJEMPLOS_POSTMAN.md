@@ -359,5 +359,5 @@ Body:
 
 ---
 
-**¡Colección lista para importar o recrear en Postman!** Asegurate de exportarla como `E-commerce-API.postman_collection.json` para llevarla a la mesa de examen si lo permiten.
+
 

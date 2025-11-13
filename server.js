@@ -30,7 +30,7 @@ app.use('/api/resenas', require('./routes/resenas'));
 app.get('/', (req, res) => {
   res.json({
     success: true,
-    message: '🚀 API E-commerce - Base de Datos 2 UTN',
+    message: 'API E-commerce - Base de Datos 2 UTN',
     version: '1.0.0',
     endpoints: {
       usuarios: '/api/users',
@@ -71,17 +71,15 @@ const PORT = process.env.PORT || 3000;
 
 const server = app.listen(PORT, () => {
   console.log(`
-╔════════════════════════════════════════════════╗
-║   🚀 Servidor corriendo en modo ${process.env.NODE_ENV || 'development'}       ║
-║   📡 Puerto: ${PORT}                              ║
-║   🌐 URL: http://localhost:${PORT}               ║
-╚════════════════════════════════════════════════╝
+Servidor corriendo en modo ${process.env.NODE_ENV || 'development'}
+Puerto: ${PORT}
+URL: http://localhost:${PORT}
   `);
 });
 
 // Manejo de rechazos de promesas no manejadas
 process.on('unhandledRejection', (err, promise) => {
-  console.log(`❌ Error: ${err.message}`);
+  console.log(`Error: ${err.message}`);
   server.close(() => process.exit(1));
 });
 

@@ -357,7 +357,3 @@ Body:
 - [ ] Scripts post-respuesta completan IDs y tokens.
 - [ ] Tests de expiración y permisos realizados.
 
----
-
-
-
